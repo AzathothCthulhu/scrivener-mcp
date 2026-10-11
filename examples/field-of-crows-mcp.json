@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "scrivener-field-of-crows": {
+      "command": "node",
+      "args": ["REPLACE_WITH_ABSOLUTE_CHECKOUT_PATH/dist/index.js"],
+      "env": {
+        "SCRIVENER_MCP_UNSAFE_UPSTREAM_WRITES": "0"
+      }
+    }
+  }
+}

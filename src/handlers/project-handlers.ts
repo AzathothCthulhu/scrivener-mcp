@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { isolateProject, manuscriptSafetyEnabled } from '../utils/manuscript-safety.js';
 import { MemoryManager } from '../memory-manager.js';
 import { ScrivenerProject } from '../scrivener-project.js';
 import { validateInput, createError, ErrorCode } from '../utils/common.js';
@@ -62,7 +63,10 @@ export const openProjectHandler: ToolDefinition = {
 		});
 
 		const rawPath = getStringArg(args, 'path');
-		const { projectPath, scrivxPath } = await resolveScrivenerProjectPath(rawPath);
+		const resolved = await resolveScrivenerProjectPath(rawPath);
+		const { projectPath, scrivxPath } = manuscriptSafetyEnabled()
+			? await isolateProject(resolved.projectPath, resolved.scrivxPath)
+			: resolved;
 
 		// Close existing project
 		if (context.project) {
@@ -107,7 +111,7 @@ export const openProjectHandler: ToolDefinition = {
 			content: [
 				{
 					type: 'text',
-					text: `Project opened: ${metadata.title || path.basename(projectPath)}\n\n${compact(
+					text: `${manuscriptSafetyEnabled() ? `Read-only source; isolated copy: ${projectPath}. Reopen the source path to update reads.\n` : ''}Project opened: ${metadata.title || path.basename(projectPath)}\n\n${compact(
 						metadata
 					)}`,
 				},

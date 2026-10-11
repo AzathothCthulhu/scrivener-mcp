@@ -22,6 +22,7 @@ import { goalsHandlers } from './goals-handlers.js';
 import { personalizationHandlers } from './personalization-handlers.js';
 import type { HandlerContext, HandlerResult, ToolDefinition } from './types.js';
 import { HandlerError } from './types.js';
+import { isToolAllowed } from '../utils/manuscript-safety.js';
 
 export interface Skill {
 	name: string;
@@ -94,7 +95,7 @@ const HIDDEN_TOOLS = new Set<string>([
 ]);
 
 function visibleTools(skill: Skill): ToolDefinition[] {
-	return skill.tools.filter((t) => !HIDDEN_TOOLS.has(t.name));
+	return skill.tools.filter((t) => !HIDDEN_TOOLS.has(t.name) && isToolAllowed(t.name));
 }
 
 // Handler map for dispatch
@@ -330,7 +331,7 @@ export function initializeSkillRegistry(): void {
  * Get all currently registered tool definitions.
  */
 export function getRegisteredTools() {
-	return Array.from(handlerMap.values()).map((h) => {
+	return Array.from(handlerMap.values()).filter((h) => isToolAllowed(h.name)).map((h) => {
 		const tool: {
 			name: string;
 			title?: string;
@@ -358,6 +359,9 @@ export async function executeRegisteredHandler(
 	args: Record<string, unknown>,
 	context: HandlerContext
 ): Promise<HandlerResult> {
+	if (!isToolAllowed(toolName)) {
+		throw new HandlerError(`Tool ${toolName} is disabled by manuscript safety policy`, 'WRITE_PROTECTED');
+	}
 	// The dispatcher auto-activates a tool's skill on demand, so a miss here is a
 	// genuinely unknown (or intentionally hidden) tool, not a not-yet-activated one.
 	activateSkillForTool(toolName);
