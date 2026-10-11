@@ -320,7 +320,7 @@ export class RTFHandler {
 		let content = rtfString;
 
 		// Remove RTF declaration
-		content = content.replace(/^\{\\rtf\d+[^}]*/, '');
+		content = content.replace(/^\{\\rtf\d+\s?/, '');
 
 		// Remove various table definitions using brace-balanced scanning (avoids ReDoS).
 		// Image destinations (\*\shppict, \pict) are dropped too: their bodies are

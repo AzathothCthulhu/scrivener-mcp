@@ -1,0 +1,66 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { SafeProjectBridge, inventory } from '../scripts/safe-project-bridge.mjs';
+const draft = '11111111-1111-4111-8111-111111111111';
+const scene = '22222222-2222-4222-8222-222222222222';
+const research = '33333333-3333-4333-8333-333333333333';
+async function fixture() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'scrivener-bridge-test-'));
+  const projectPath = path.join(root, 'Test.scriv'), backupRoot = path.join(root, 'backups');
+  await fs.mkdir(path.join(projectPath, 'Files', 'Data', scene), { recursive: true });
+  await fs.writeFile(path.join(projectPath, 'Test.scrivx'), `<?xml version="1.0"?><ScrivenerProject Version="2.0"><Binder><BinderItem UUID="${draft}" Type="DraftFolder"><Title>Manuscript</Title><Children><BinderItem UUID="${scene}" Type="Text"><Title>Scene</Title></BinderItem></Children></BinderItem><BinderItem UUID="${research}" Type="ResearchFolder"><Title>Research</Title></BinderItem></Binder></ScrivenerProject>`);
+  await fs.writeFile(path.join(projectPath, 'Files', 'Data', scene, 'content.rtf'), '{\\rtf1 Original manuscript}');
+  await fs.writeFile(path.join(projectPath, 'Files', 'Data', scene, 'notes.rtf'), '{\\rtf1\\ansi {\\b Original bold note}}');
+  return new SafeProjectBridge({ projectPath, backupRoot, researchRootId: research, allowDocumentNotes: true }).initialize();
+}
+test('research import, repeat update, Unicode and note append preserve manuscript and original notes', async () => {
+  const bridge = await fixture(), original = await inventory(bridge.root);
+  const plan = await bridge.prepare({ kind: 'research', title: 'Morrígan brief', text: 'Crows — uncertainty 🐦', artifactKey: 'capacities:123', sources: [{ system: 'Capacities', objectId: '123', title: 'Folklore' }] });
+  assert.deepEqual(await inventory(bridge.root), original);
+  const result = await bridge.commit(plan.token);
+  assert.equal(result.committed, true);
+  assert.match((await bridge.read(plan.documentId)).content, /Crows — uncertainty 🐦/);
+  const second = await bridge.prepare({ kind: 'research', title: 'Updated', text: 'Updated source interpretation', artifactKey: 'capacities:123' });
+  assert.equal(second.documentId, plan.documentId);
+  await bridge.commit(second.token);
+  assert.equal((await bridge.list()).filter(doc => doc.title === 'Updated').length, 1);
+  const notePath = path.join(bridge.root, 'Files', 'Data', scene, 'notes.rtf');
+  const oldNote = await fs.readFile(notePath, 'utf8');
+  await bridge.commit((await bridge.prepare({ kind: 'append_note', documentId: scene, text: 'A sourced note' })).token);
+  assert.ok((await fs.readFile(notePath, 'utf8')).startsWith(oldNote.slice(0, -1)));
+  assert.match((await bridge.read(scene)).notes, /Original bold note/);
+  assert.match((await bridge.read(scene)).notes, /A sourced note/);
+  assert.equal((await inventory(bridge.root))[path.join('Files', 'Data', scene, 'content.rtf')], original[path.join('Files', 'Data', scene, 'content.rtf')]);
+});
+test('partial failure rolls back, stale previews fail, open projects and forbidden destinations fail', async () => {
+  const bridge = await fixture(), before = await inventory(bridge.root);
+  const plan = await bridge.prepare({ kind: 'research', title: 'Test', text: 'Test', artifactKey: 'test' });
+  await assert.rejects(bridge.commit(plan.token, 1), /Injected/);
+  assert.deepEqual(await inventory(bridge.root), before);
+  await fs.writeFile(path.join(bridge.root, 'external.txt'), 'External change');
+  await assert.rejects(bridge.commit(plan.token), /changed since preview/);
+  await assert.rejects(bridge.prepare({ kind: 'body', text: 'Overwrite' }), /Unsupported/);
+  bridge.config.researchRootId = draft;
+  await assert.rejects(bridge.prepare({ kind: 'research', title: 'Test', text: 'Test', artifactKey: 'test' }), /safe Research/);
+  await fs.writeFile(path.join(bridge.root, 'Files', 'user.lock'), 'locked');
+  await assert.rejects(bridge.prepare({ kind: 'synopsis', documentId: scene, text: 'Replacement' }), /Close Scrivener/);
+});
+test('verified incomplete journal recovers and a backup-location failure leaves source untouched', async () => {
+  const bridge = await fixture();
+  const plan = await bridge.prepare({ kind: 'synopsis', documentId: scene, text: 'Synopsis' });
+  const before = await inventory(bridge.root);
+  const committed = await bridge.commit(plan.token);
+  const session = path.dirname(committed.backup), transaction = path.basename(session);
+  const after = await inventory(bridge.root), changedFile = committed.changedFiles[0];
+  await fs.writeFile(path.join(session, 'journal.json'), JSON.stringify({ state: 'prepared', project: bridge.root, files: committed.changedFiles, nextHashes: { [changedFile]: after[changedFile] } }));
+  assert.equal((await bridge.recover(transaction)).recovered, true);
+  assert.deepEqual(await inventory(bridge.root), before);
+  const fresh = await bridge.prepare({ kind: 'synopsis', documentId: scene, text: 'New synopsis' });
+  const badRoot = path.join(bridge.backups, 'not-a-directory');
+  await fs.writeFile(badRoot, 'file'); bridge.backups = badRoot;
+  await assert.rejects(bridge.commit(fresh.token));
+  assert.deepEqual(await inventory(bridge.root), before);
+});
